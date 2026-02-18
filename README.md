@@ -70,6 +70,11 @@ Run continuous mode for a fixed wall-clock runtime (6 hours):
 KALSHI_CONTINUOUS=1 KALSHI_MAX_RUNTIME_SECONDS=21600 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
 ```
 
+Recommended on macOS for unattended 6-hour runs (prevents sleep/clamshell pauses):
+```bash
+bash scripts/run_6h_mac.sh
+```
+
 Print a daily summary (trades executed, total PnL, skip reasons, top markets by arb hit rate):
 ```bash
 KALSHI_DAILY_SUMMARY=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
@@ -95,6 +100,7 @@ Ledger output files (created automatically):
 - `data/ledger/trade_log.csv` - every executed paper trade with entry/exit timestamps and `held_seconds`
 - `data/ledger/market_selector_state.json` - persisted adaptive scan learning state
 - `data/ledger/market_candidates_cache.json` - cached market universe for outage fallback
+- `logs/kalshi_6h_*.status` - completion status with exit code for each timed run
 
 ## Test Files
 - `tests/test_paper_lock.py`

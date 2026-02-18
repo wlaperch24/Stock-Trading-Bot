@@ -460,8 +460,10 @@ def run_continuous(
 
     cycle = 0
     current_day = utc_now().date()
+    started_at_utc = utc_now()
     consecutive_degraded_cycles = 0
-    started_at = time.monotonic()
+    cadence_gap_warning_seconds = max(cfg.execution.cadence_seconds, cfg.execution.degraded_cycle_sleep_seconds) * 2
+    last_cycle_end_utc = started_at_utc
     print(
         "Continuous mode started: "
         f"cadence={cfg.execution.cadence_seconds}s "
@@ -472,6 +474,22 @@ def run_continuous(
         flush=True,
     )
     while True:
+        if (
+            max_runtime_seconds is not None
+            and cycle > 0
+            and (utc_now() - started_at_utc).total_seconds() >= max_runtime_seconds
+        ):
+            break
+
+        now_utc = utc_now()
+        gap_seconds = (now_utc - last_cycle_end_utc).total_seconds()
+        if cycle > 0 and gap_seconds > cadence_gap_warning_seconds:
+            print(
+                f"Warning: detected {gap_seconds:.0f}s gap between cycles "
+                "(possible system sleep or suspended process scheduling).",
+                flush=True,
+            )
+
         new_day = utc_now().date()
         if new_day != current_day:
             runtime.risk_manager.reset_day()
@@ -500,9 +518,13 @@ def run_continuous(
                 break
             if max_cycles is not None and cycle >= max_cycles:
                 break
-            if max_runtime_seconds is not None and (time.monotonic() - started_at) >= max_runtime_seconds:
+            if (
+                max_runtime_seconds is not None
+                and (utc_now() - started_at_utc).total_seconds() >= max_runtime_seconds
+            ):
                 break
             time.sleep(cfg.execution.degraded_cycle_sleep_seconds)
+            last_cycle_end_utc = utc_now()
             continue
 
         cycle_status = str(result["cycle_status"])
@@ -533,13 +555,17 @@ def run_continuous(
             break
         if max_cycles is not None and cycle >= max_cycles:
             break
-        if max_runtime_seconds is not None and (time.monotonic() - started_at) >= max_runtime_seconds:
+        if (
+            max_runtime_seconds is not None
+            and (utc_now() - started_at_utc).total_seconds() >= max_runtime_seconds
+        ):
             break
 
         if cycle_status == "degraded":
             time.sleep(cfg.execution.degraded_cycle_sleep_seconds)
         else:
             time.sleep(cfg.execution.cadence_seconds)
+        last_cycle_end_utc = utc_now()
 
 
 def run_daily_summary(config: AppConfig | None = None, target_date: str | None = None) -> dict[str, Any]:

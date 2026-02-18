@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 from trading_bot.config import AppConfig, load_default_config
 from trading_bot import main as main_module
@@ -107,3 +108,31 @@ def test_continuous_exits_early_when_preflight_fails(monkeypatch, tmp_path: Path
 
     main_module.run_continuous(config=cfg, max_cycles=10)
     assert calls["count"] == 0
+
+
+def test_continuous_uses_wall_clock_runtime_even_after_large_sleep_gap(monkeypatch, tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg.execution.preflight_connectivity_check = False
+    cfg.execution.cadence_seconds = 600
+    calls = {"count": 0}
+
+    def _fake_cycle(**kwargs):
+        calls["count"] += 1
+        return _result("ok")
+
+    base = datetime(2026, 2, 18, 0, 0, 0, tzinfo=timezone.utc)
+    current = {"now": base}
+
+    def _fake_utc_now():
+        return current["now"]
+
+    def _fake_sleep(seconds: float):
+        # Simulate host sleep/wake jump; wall-clock advances far beyond runtime target.
+        current["now"] = current["now"] + timedelta(seconds=seconds + 7200)
+
+    monkeypatch.setattr(main_module, "run_market_scan_cycle", _fake_cycle)
+    monkeypatch.setattr(main_module, "utc_now", _fake_utc_now)
+    monkeypatch.setattr(main_module.time, "sleep", _fake_sleep)
+
+    main_module.run_continuous(config=cfg, max_cycles=10, max_runtime_seconds=3600)
+    assert calls["count"] == 1
