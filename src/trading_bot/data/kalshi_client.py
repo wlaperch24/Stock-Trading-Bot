@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import signal
+import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 from trading_bot.common import MarketDescriptor, MarketSnapshot, OrderBookLevel, utc_now
 from trading_bot.execution.live_guard import SafetyGuard
@@ -19,14 +22,19 @@ class KalshiDataClient:
         base_url: str,
         safety_guard: SafetyGuard,
         timeout_seconds: int = 10,
+        hard_timeout_seconds: int = 20,
+        disable_system_proxy: bool = True,
         max_retries: int = 2,
         retry_backoff_seconds: float = 0.5,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._guard = safety_guard
         self._timeout_seconds = timeout_seconds
+        self._hard_timeout_seconds = max(1, hard_timeout_seconds)
+        self._disable_system_proxy = disable_system_proxy
         self._max_retries = max(0, max_retries)
         self._retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        self._opener = build_opener(ProxyHandler({})) if self._disable_system_proxy else None
 
     def _build_url(self, path: str, params: Optional[Dict[str, Any]] = None) -> str:
         base = f"{self._base_url}/{path.lstrip('/')}"
@@ -41,8 +49,9 @@ class KalshiDataClient:
 
         for attempt in range(self._max_retries + 1):
             try:
-                with urlopen(request, timeout=self._timeout_seconds) as response:
-                    return json.loads(response.read().decode("utf-8"))
+                with self._hard_timeout():
+                    with self._open_request(request) as response:
+                        return json.loads(response.read().decode("utf-8"))
             except HTTPError as exc:
                 if not self._should_retry_http(exc.code) or attempt >= self._max_retries:
                     raise
@@ -53,6 +62,36 @@ class KalshiDataClient:
             time.sleep(self._retry_backoff_seconds * (attempt + 1))
 
         raise RuntimeError("Unreachable retry state")
+
+    def _open_request(self, request: Request):
+        if self._opener is not None:
+            return self._opener.open(request, timeout=self._timeout_seconds)
+        return urlopen(request, timeout=self._timeout_seconds)
+
+    @contextmanager
+    def _hard_timeout(self):
+        if not hasattr(signal, "SIGALRM") or not hasattr(signal, "setitimer"):
+            yield
+            return
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+
+        def _raise_timeout(signum, frame):
+            raise TimeoutError(f"HTTP request hard timeout exceeded ({self._hard_timeout_seconds}s)")
+
+        signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.setitimer(signal.ITIMER_REAL, float(self._hard_timeout_seconds))
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            if previous_timer[0] > 0 or previous_timer[1] > 0:
+                signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
     @staticmethod
     def _should_retry_http(status_code: int) -> bool:

@@ -51,6 +51,13 @@ def test_config_rejects_invalid_snapshot_failure_limit() -> None:
         config.validate()
 
 
+def test_config_rejects_invalid_http_hard_timeout() -> None:
+    config = load_default_config()
+    config.execution.http_hard_timeout_seconds = 0
+    with pytest.raises(ValueError):
+        config.validate()
+
+
 def test_safety_guard_blocks_non_data_paths() -> None:
     config = load_default_config()
     reporter = Reporter()

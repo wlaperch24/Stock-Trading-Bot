@@ -33,6 +33,8 @@ class ExecutionConfig:
     selector_state_file: str = "data/ledger/market_selector_state.json"
     market_cache_file: str = "data/ledger/market_candidates_cache.json"
     http_timeout_seconds: int = 10
+    http_hard_timeout_seconds: int = 20
+    http_disable_system_proxy: bool = True
     http_max_retries: int = 2
     http_retry_backoff_seconds: float = 0.5
     max_snapshot_fetch_failures_per_cycle: int = 12
@@ -125,6 +127,8 @@ class AppConfig:
             raise ValueError("market_cache_file cannot be empty.")
         if self.execution.http_timeout_seconds < 1:
             raise ValueError("http_timeout_seconds must be >= 1.")
+        if self.execution.http_hard_timeout_seconds < 1:
+            raise ValueError("http_hard_timeout_seconds must be >= 1.")
         if self.execution.http_max_retries < 0:
             raise ValueError("http_max_retries cannot be negative.")
         if self.execution.http_retry_backoff_seconds < 0:

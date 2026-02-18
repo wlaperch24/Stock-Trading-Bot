@@ -63,6 +63,8 @@ def _build_runtime(cfg: AppConfig) -> RuntimeContext:
         cfg.kalshi_base_url,
         guard,
         timeout_seconds=cfg.execution.http_timeout_seconds,
+        hard_timeout_seconds=cfg.execution.http_hard_timeout_seconds,
+        disable_system_proxy=cfg.execution.http_disable_system_proxy,
         max_retries=cfg.execution.http_max_retries,
         retry_backoff_seconds=cfg.execution.http_retry_backoff_seconds,
     )

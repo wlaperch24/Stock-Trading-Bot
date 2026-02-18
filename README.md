@@ -20,6 +20,7 @@ This project is a paper-trading framework that reads real-time Kalshi market dat
 - Selector learning state persists across restarts (`market_selector_state.json`)
 - Candidate market universe cache is used if discovery temporarily fails
 - HTTP retries are enabled for transient API/network errors
+- Kalshi HTTP client uses hard request timeouts and bypasses system proxy auto-detection for deterministic connectivity behavior
 - Continuous mode treats discovery outages as degraded cycles and auto-retries with bounded consecutive-failure protection
 - Continuous mode now performs a strict Kalshi connectivity preflight and exits fast with explicit DNS/network diagnostics when data cannot be reached
 - Risk limits:
