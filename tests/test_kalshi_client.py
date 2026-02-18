@@ -28,3 +28,32 @@ def test_parse_level_handles_bad_payloads() -> None:
     price, size = KalshiDataClient._parse_level({"price": "bad", "size": 10})
     assert price == 0.0
     assert size == 0.0
+
+
+def test_parse_market_descriptor_uses_liquidity_fields() -> None:
+    raw = {"ticker": "ABC-123", "liquidity": "250.5", "category": "crypto"}
+    descriptor = KalshiDataClient._parse_market_descriptor(raw)
+    assert descriptor is not None
+    assert descriptor.ticker == "ABC-123"
+    assert descriptor.liquidity_score == 250.5
+    assert descriptor.category == "crypto"
+
+
+def test_discover_open_markets_filters_by_liquidity() -> None:
+    config = AppConfig()
+    config.execution.mode = ExecutionMode.PAPER
+    guard = SafetyGuard(config)
+    client = KalshiDataClient(config.kalshi_base_url, guard)
+
+    payload = {
+        "markets": [
+            {"ticker": "HIGH-1", "liquidity": 1000},
+            {"ticker": "LOW-1", "liquidity": 1},
+        ],
+        "cursor": None,
+    }
+    client.fetch_markets = lambda limit, status, cursor=None: payload  # type: ignore[assignment]
+
+    markets = client.discover_open_markets(limit=10, pool_limit=10, min_liquidity=50)
+    tickers = [market.ticker for market in markets]
+    assert tickers == ["HIGH-1"]

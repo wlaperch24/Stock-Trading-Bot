@@ -8,10 +8,18 @@ This project is a paper-trading framework that reads real-time Kalshi market dat
 - Non-GET requests are blocked in paper mode.
 - Trade/order/portfolio API paths are blocked in paper mode.
 - Paper ledger is the only source of trade PnL and success tracking.
+- No forced trading: when no qualifying opportunity exists, the bot records `skip` and places no trade.
 
 ## Current V1 Scope
 - Venue: Kalshi (market data only in runtime)
 - Strategy: Arbitrage-first complementary YES/NO pair detection
+- Discovery: dynamic market discovery each cycle
+- Default scan cadence: every 10 minutes
+- Default scan size: up to 200 markets per cycle
+- Adaptive selector: revisits historically strong arbitrage markets more often and deprioritizes weak markets only after multiple observations
+- Selector learning state persists across restarts (`market_selector_state.json`)
+- Candidate market universe cache is used if discovery temporarily fails
+- HTTP retries are enabled for transient API/network errors
 - Risk limits:
   - Starting capital: `$5,000`
   - Max trade notional: `$100`
@@ -31,6 +39,7 @@ This project is a paper-trading framework that reads real-time Kalshi market dat
 - `src/trading_bot/risk/manager.py` - risk controls and pause policy
 - `src/trading_bot/learning/retrainer.py` - nightly model promotion guardrails
 - `src/trading_bot/monitoring/reporter.py` - alerts and daily reporting
+- `src/trading_bot/monitoring/ledger_store.py` - CSV decision/trade ledger
 - `src/trading_bot/main.py` - runnable orchestration entrypoint
 
 ## Run Locally
@@ -38,14 +47,33 @@ This project is a paper-trading framework that reads real-time Kalshi market dat
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
 ```
 
-Use real-time Kalshi production market data (still paper execution only):
+Use one specific market ticker (real-time Kalshi production data, still paper execution only):
 ```bash
 KALSHI_MARKET_TICKER=YOUR_MARKET_TICKER PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
 ```
+
+Run continuous adaptive scanning (defaults: 200 markets every 10 minutes):
+```bash
+KALSHI_CONTINUOUS=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
+```
+
+Run continuous mode for a fixed number of cycles:
+```bash
+KALSHI_CONTINUOUS=1 KALSHI_MAX_CYCLES=3 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
+```
+
+Ledger output files (created automatically):
+- `data/ledger/decision_log.csv` - every market decision and reason (`execute_paper`, `skip`, `halt`)
+- `data/ledger/trade_log.csv` - every executed paper trade with entry/exit timestamps and `held_seconds`
+- `data/ledger/market_selector_state.json` - persisted adaptive scan learning state
+- `data/ledger/market_candidates_cache.json` - cached market universe for outage fallback
 
 ## Test Files
 - `tests/test_paper_lock.py`
 - `tests/test_arb_pairing.py`
 - `tests/test_paper_performance_tracking.py`
-
-Note: `pytest` is required to run tests and is not installed in the current environment.
+- `tests/test_kalshi_client.py`
+- `tests/test_market_selector.py`
+- `tests/test_ledger_transparency.py`
+- `tests/test_kalshi_retry.py`
+- `tests/test_cycle_resilience.py`

@@ -18,11 +18,21 @@ class RiskConfig:
 @dataclass
 class ExecutionConfig:
     mode: ExecutionMode = ExecutionMode.PAPER
-    cadence_seconds: int = 300
+    cadence_seconds: int = 600
     fee_bps: float = 8.0
     slippage_bps: float = 10.0
     min_net_edge: float = 0.0
     v1_paper_only: bool = True
+    market_scan_limit: int = 200
+    market_candidate_pool_limit: int = 600
+    min_market_liquidity: float = 50.0
+    min_observations_before_deprioritize: int = 8
+    exploration_markets_per_cycle: int = 40
+    ledger_dir: str = "data/ledger"
+    selector_state_file: str = "data/ledger/market_selector_state.json"
+    market_cache_file: str = "data/ledger/market_candidates_cache.json"
+    http_max_retries: int = 2
+    http_retry_backoff_seconds: float = 0.5
 
 
 @dataclass
@@ -86,6 +96,26 @@ class AppConfig:
             raise ValueError("max_total_exposure cannot exceed starting capital.")
         if self.execution.cadence_seconds < 60:
             raise ValueError("cadence_seconds must be at least 60 seconds.")
+        if self.execution.market_scan_limit <= 0:
+            raise ValueError("market_scan_limit must be positive.")
+        if self.execution.market_candidate_pool_limit < self.execution.market_scan_limit:
+            raise ValueError("market_candidate_pool_limit must be >= market_scan_limit.")
+        if self.execution.min_market_liquidity < 0:
+            raise ValueError("min_market_liquidity cannot be negative.")
+        if self.execution.min_observations_before_deprioritize < 1:
+            raise ValueError("min_observations_before_deprioritize must be >= 1.")
+        if self.execution.exploration_markets_per_cycle < 0:
+            raise ValueError("exploration_markets_per_cycle cannot be negative.")
+        if not self.execution.ledger_dir.strip():
+            raise ValueError("ledger_dir cannot be empty.")
+        if not self.execution.selector_state_file.strip():
+            raise ValueError("selector_state_file cannot be empty.")
+        if not self.execution.market_cache_file.strip():
+            raise ValueError("market_cache_file cannot be empty.")
+        if self.execution.http_max_retries < 0:
+            raise ValueError("http_max_retries cannot be negative.")
+        if self.execution.http_retry_backoff_seconds < 0:
+            raise ValueError("http_retry_backoff_seconds cannot be negative.")
 
 
 def load_default_config() -> AppConfig:

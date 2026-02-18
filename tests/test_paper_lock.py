@@ -21,6 +21,14 @@ def test_config_rejects_exposure_above_starting_capital() -> None:
         config.validate()
 
 
+def test_config_rejects_candidate_pool_smaller_than_scan_limit() -> None:
+    config = load_default_config()
+    config.execution.market_scan_limit = 200
+    config.execution.market_candidate_pool_limit = 199
+    with pytest.raises(ValueError):
+        config.validate()
+
+
 def test_safety_guard_blocks_non_data_paths() -> None:
     config = load_default_config()
     reporter = Reporter()

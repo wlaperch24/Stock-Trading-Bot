@@ -33,6 +33,13 @@ class MarketSnapshot:
 
 
 @dataclass(frozen=True)
+class MarketDescriptor:
+    ticker: str
+    liquidity_score: float = 0.0
+    category: str = "unknown"
+
+
+@dataclass(frozen=True)
 class ArbOpportunity:
     ticker: str
     yes_price: float
