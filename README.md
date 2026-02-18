@@ -20,9 +20,10 @@ This project is a paper-trading framework that reads real-time Kalshi market dat
 - Selector learning state persists across restarts (`market_selector_state.json`)
 - Candidate market universe cache is used if discovery temporarily fails
 - HTTP retries are enabled for transient API/network errors
+- Continuous mode treats discovery outages as degraded cycles and auto-retries with bounded consecutive-failure protection
 - Risk limits:
   - Starting capital: `$5,000`
-  - Max trade notional: `$100`
+  - Fixed trade notional per executed trade: `$100`
   - Max total exposure: `$500`
   - Daily loss stop: `$300`
 - Red-day policy: automatic pause + review required
@@ -62,6 +63,31 @@ Run continuous mode for a fixed number of cycles:
 KALSHI_CONTINUOUS=1 KALSHI_MAX_CYCLES=3 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
 ```
 
+Run continuous mode for a fixed wall-clock runtime (6 hours):
+```bash
+KALSHI_CONTINUOUS=1 KALSHI_MAX_RUNTIME_SECONDS=21600 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
+```
+
+Print a daily summary (trades executed, total PnL, skip reasons, top markets by arb hit rate):
+```bash
+KALSHI_DAILY_SUMMARY=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
+```
+
+Print summary for a specific date (UTC):
+```bash
+KALSHI_DAILY_SUMMARY=1 KALSHI_SUMMARY_DATE=2026-02-18 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
+```
+
+Export a color-coded Excel file (green profit rows, red loss rows, grand net total):
+```bash
+KALSHI_EXPORT_EXCEL=1 KALSHI_SUMMARY_DATE=2026-02-18 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
+```
+
+Export to a custom file path:
+```bash
+KALSHI_EXPORT_EXCEL=1 KALSHI_SUMMARY_DATE=2026-02-18 KALSHI_EXCEL_PATH=reports/my_trade_report.xlsx PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 src/trading_bot/main.py
+```
+
 Ledger output files (created automatically):
 - `data/ledger/decision_log.csv` - every market decision and reason (`execute_paper`, `skip`, `halt`)
 - `data/ledger/trade_log.csv` - every executed paper trade with entry/exit timestamps and `held_seconds`
@@ -77,3 +103,11 @@ Ledger output files (created automatically):
 - `tests/test_ledger_transparency.py`
 - `tests/test_kalshi_retry.py`
 - `tests/test_cycle_resilience.py`
+- `tests/test_run_continuous.py`
+- `tests/test_daily_summary.py`
+- `tests/test_excel_export.py`
+
+Daily summary now includes:
+- total executed notional
+- average PnL per executed trade
+- average return percentage per executed trade

@@ -28,8 +28,8 @@ def test_ledger_files_written_with_decisions_and_trades(tmp_path: Path) -> None:
 
     snapshot = MarketSnapshot(
         ticker="HAS-ARB",
-        yes_ask=OrderBookLevel(price=0.48, size=100.0),
-        no_ask=OrderBookLevel(price=0.49, size=100.0),
+        yes_ask=OrderBookLevel(price=0.48, size=200.0),
+        no_ask=OrderBookLevel(price=0.49, size=200.0),
         last_updated=utc_now(),
     )
 

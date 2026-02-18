@@ -34,20 +34,24 @@ class DecisionPolicy:
         if pair_cost <= 0:
             return DecisionResult(action=DecisionAction.SKIP, reason="Invalid pair cost")
 
-        max_notional = min(
-            self._config.risk.max_dollars_per_trade,
-            self._risk_manager.remaining_trade_capacity(),
-        )
-        max_shares_by_notional = max_notional / pair_cost
-        shares = min(max_shares_by_notional, opportunity.shares_available)
+        target_notional = self._config.risk.min_dollars_per_trade
+        if target_notional > self._config.risk.max_dollars_per_trade:
+            return DecisionResult(action=DecisionAction.HALT, reason="Invalid fixed trade size configuration")
 
+        remaining_capacity = self._risk_manager.remaining_trade_capacity()
+        if remaining_capacity < target_notional:
+            return DecisionResult(action=DecisionAction.SKIP, reason="Insufficient remaining risk capacity for fixed trade size")
+
+        max_fillable_notional = opportunity.shares_available * pair_cost
+        if max_fillable_notional < target_notional:
+            return DecisionResult(action=DecisionAction.SKIP, reason="Insufficient two-leg liquidity for fixed trade size")
+
+        shares = target_notional / pair_cost
         if shares <= 0:
-            return DecisionResult(action=DecisionAction.SKIP, reason="No available liquidity for both legs")
+            return DecisionResult(action=DecisionAction.SKIP, reason="Invalid share size for fixed trade size")
 
-        notional = shares * pair_cost
-        if not self._risk_manager.can_open_notional(notional):
-            self._risk_manager.halt("Risk constraint prevented trade")
-            return DecisionResult(action=DecisionAction.HALT, reason="Risk constraint prevented trade")
+        if not self._risk_manager.can_open_notional(target_notional):
+            return DecisionResult(action=DecisionAction.SKIP, reason="Risk constraint prevented fixed-size trade")
 
         return DecisionResult(
             action=DecisionAction.EXECUTE_PAPER,
@@ -58,7 +62,7 @@ class DecisionPolicy:
                 yes_price=opportunity.yes_price,
                 no_price=opportunity.no_price,
                 shares=shares,
-                notional=notional,
+                notional=target_notional,
             ),
             opportunity=opportunity,
         )

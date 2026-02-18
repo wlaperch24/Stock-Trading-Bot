@@ -65,3 +65,52 @@ def test_cycle_uses_cached_markets_when_discovery_fails(tmp_path: Path) -> None:
     assert second["cycle_status"] == "ok"
     assert second["used_cached_candidates"] is True
     assert second["selected_markets"] >= 1
+
+
+def test_cycle_is_degraded_when_discovery_fails_without_cache(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    runtime = _build_runtime(cfg)
+    selector = _build_selector(cfg)
+
+    def _raise_discovery(**_):
+        raise RuntimeError("network down")
+
+    runtime.data_client.discover_open_markets = _raise_discovery  # type: ignore[assignment]
+    result = run_market_scan_cycle(config=cfg, selector=selector, runtime=runtime)
+
+    assert result["cycle_status"] == "degraded"
+    assert result["reason"] == "Market discovery failed"
+    assert runtime.risk_manager.state.halted is False
+
+
+def test_cycle_is_degraded_when_no_candidates_available(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    runtime = _build_runtime(cfg)
+    selector = _build_selector(cfg)
+
+    runtime.data_client.discover_open_markets = lambda **_: []  # type: ignore[assignment]
+    result = run_market_scan_cycle(config=cfg, selector=selector, runtime=runtime)
+
+    assert result["cycle_status"] == "degraded"
+    assert result["reason"] == "No candidate markets available"
+    assert runtime.risk_manager.state.halted is False
+
+
+def test_cycle_is_degraded_when_snapshot_failures_hit_threshold(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg.execution.max_snapshot_fetch_failures_per_cycle = 1
+    cfg.validate()
+    runtime = _build_runtime(cfg)
+    selector = _build_selector(cfg)
+
+    runtime.data_client.discover_open_markets = lambda **_: [MarketDescriptor("MKT-1", liquidity_score=100)]  # type: ignore[assignment]
+
+    def _raise_snapshot(_ticker: str):
+        raise RuntimeError("snapshot timeout")
+
+    runtime.data_client.fetch_market_snapshot = _raise_snapshot  # type: ignore[assignment]
+    result = run_market_scan_cycle(config=cfg, selector=selector, runtime=runtime)
+
+    assert result["cycle_status"] == "degraded"
+    assert "Snapshot fetch failure threshold reached" in result["reason"]
+    assert result["snapshot_fetch_failures"] == 1

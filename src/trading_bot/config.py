@@ -8,6 +8,7 @@ from trading_bot.common import ExecutionMode
 
 @dataclass
 class RiskConfig:
+    min_dollars_per_trade: float = 100.0
     max_dollars_per_trade: float = 100.0
     max_total_exposure: float = 500.0
     max_daily_loss: float = 300.0
@@ -31,13 +32,18 @@ class ExecutionConfig:
     ledger_dir: str = "data/ledger"
     selector_state_file: str = "data/ledger/market_selector_state.json"
     market_cache_file: str = "data/ledger/market_candidates_cache.json"
+    http_timeout_seconds: int = 10
     http_max_retries: int = 2
     http_retry_backoff_seconds: float = 0.5
+    max_snapshot_fetch_failures_per_cycle: int = 12
+    max_consecutive_degraded_cycles: int = 6
+    degraded_cycle_sleep_seconds: int = 60
 
 
 @dataclass
 class SafetyConfig:
     allowed_data_hosts: Tuple[str, ...] = (
+        "api.elections.kalshi.com",
         "api.kalshi.com",
         "trading-api.kalshi.com",
     )
@@ -79,17 +85,21 @@ class AppConfig:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     target: ProfitTargetConfig = field(default_factory=ProfitTargetConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
-    kalshi_base_url: str = "https://api.kalshi.com/trade-api/v2"
+    kalshi_base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
 
     def validate(self) -> None:
         if self.execution.v1_paper_only and self.execution.mode != ExecutionMode.PAPER:
             raise ValueError("V1 runtime is hard-locked to paper mode.")
         if self.risk.max_dollars_per_trade <= 0:
             raise ValueError("max_dollars_per_trade must be positive.")
+        if self.risk.min_dollars_per_trade <= 0:
+            raise ValueError("min_dollars_per_trade must be positive.")
         if self.risk.max_total_exposure <= 0:
             raise ValueError("max_total_exposure must be positive.")
         if self.risk.starting_capital <= 0:
             raise ValueError("starting_capital must be positive.")
+        if self.risk.min_dollars_per_trade > self.risk.max_dollars_per_trade:
+            raise ValueError("min_dollars_per_trade cannot exceed max_dollars_per_trade.")
         if self.risk.max_dollars_per_trade > self.risk.starting_capital:
             raise ValueError("max_dollars_per_trade cannot exceed starting capital.")
         if self.risk.max_total_exposure > self.risk.starting_capital:
@@ -112,10 +122,18 @@ class AppConfig:
             raise ValueError("selector_state_file cannot be empty.")
         if not self.execution.market_cache_file.strip():
             raise ValueError("market_cache_file cannot be empty.")
+        if self.execution.http_timeout_seconds < 1:
+            raise ValueError("http_timeout_seconds must be >= 1.")
         if self.execution.http_max_retries < 0:
             raise ValueError("http_max_retries cannot be negative.")
         if self.execution.http_retry_backoff_seconds < 0:
             raise ValueError("http_retry_backoff_seconds cannot be negative.")
+        if self.execution.max_snapshot_fetch_failures_per_cycle < 1:
+            raise ValueError("max_snapshot_fetch_failures_per_cycle must be >= 1.")
+        if self.execution.max_consecutive_degraded_cycles < 1:
+            raise ValueError("max_consecutive_degraded_cycles must be >= 1.")
+        if self.execution.degraded_cycle_sleep_seconds < 1:
+            raise ValueError("degraded_cycle_sleep_seconds must be >= 1.")
 
 
 def load_default_config() -> AppConfig:

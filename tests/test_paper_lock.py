@@ -29,6 +29,28 @@ def test_config_rejects_candidate_pool_smaller_than_scan_limit() -> None:
         config.validate()
 
 
+def test_config_rejects_min_trade_above_max_trade() -> None:
+    config = load_default_config()
+    config.risk.min_dollars_per_trade = 101.0
+    config.risk.max_dollars_per_trade = 100.0
+    with pytest.raises(ValueError):
+        config.validate()
+
+
+def test_config_rejects_invalid_degraded_cycle_limit() -> None:
+    config = load_default_config()
+    config.execution.max_consecutive_degraded_cycles = 0
+    with pytest.raises(ValueError):
+        config.validate()
+
+
+def test_config_rejects_invalid_snapshot_failure_limit() -> None:
+    config = load_default_config()
+    config.execution.max_snapshot_fetch_failures_per_cycle = 0
+    with pytest.raises(ValueError):
+        config.validate()
+
+
 def test_safety_guard_blocks_non_data_paths() -> None:
     config = load_default_config()
     reporter = Reporter()

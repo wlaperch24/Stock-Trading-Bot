@@ -14,9 +14,22 @@ from trading_bot.config import AppConfig, load_default_config
 from trading_bot.data import KalshiDataClient
 from trading_bot.decision import DecisionPolicy
 from trading_bot.execution import PaperExecutionEngine, SafetyGuard
-from trading_bot.monitoring import CsvLedgerStore, Reporter
+from trading_bot.monitoring import CsvLedgerStore, Reporter, build_daily_summary, export_trades_to_excel
 from trading_bot.risk import RiskManager
 from trading_bot.signals import AdaptiveMarketSelector, ArbitrageDetector
+
+ANSI_RESET = "\033[0m"
+ANSI_GREEN = "\033[32m"
+ANSI_RED = "\033[31m"
+
+
+def _colorize_pnl(value: float, with_sign: bool = True) -> str:
+    text = f"{value:+.6f}" if with_sign else f"{value:.6f}"
+    if value > 0:
+        return f"{ANSI_GREEN}{text}{ANSI_RESET}"
+    if value < 0:
+        return f"{ANSI_RED}{text}{ANSI_RESET}"
+    return text
 
 
 def build_sample_snapshot() -> MarketSnapshot:
@@ -48,6 +61,7 @@ def _build_runtime(cfg: AppConfig) -> RuntimeContext:
     data_client = KalshiDataClient(
         cfg.kalshi_base_url,
         guard,
+        timeout_seconds=cfg.execution.http_timeout_seconds,
         max_retries=cfg.execution.http_max_retries,
         retry_backoff_seconds=cfg.execution.http_retry_backoff_seconds,
     )
@@ -245,10 +259,9 @@ def run_market_scan_cycle(
         candidates = _load_market_cache(cfg.execution.market_cache_file)
         used_cached_candidates = bool(candidates)
         if not used_cached_candidates:
-            runtime.risk_manager.halt("Market discovery failed")
             selector.save_state(cfg.execution.selector_state_file)
             return {
-                "cycle_status": "halted",
+                "cycle_status": "degraded",
                 "reason": "Market discovery failed",
                 "candidate_markets": 0,
                 "selected_markets": 0,
@@ -268,10 +281,9 @@ def run_market_scan_cycle(
         runtime.reporter.critical("Using cached market universe due discovery failure/empty response")
 
     if not candidates:
-        runtime.risk_manager.halt("No candidate markets available")
         selector.save_state(cfg.execution.selector_state_file)
         return {
-            "cycle_status": "halted",
+            "cycle_status": "degraded",
             "reason": "No candidate markets available",
             "candidate_markets": 0,
             "selected_markets": 0,
@@ -292,6 +304,8 @@ def run_market_scan_cycle(
     scanned_markets = 0
     executed_trades = 0
     skipped_markets = 0
+    snapshot_fetch_failures = 0
+    cycle_degraded_reason: str | None = None
 
     for market in selected:
         scanned_markets += 1
@@ -314,6 +328,16 @@ def run_market_scan_cycle(
                 executed_status="skipped_fetch_error",
             )
             skipped_markets += 1
+            snapshot_fetch_failures += 1
+            if snapshot_fetch_failures >= cfg.execution.max_snapshot_fetch_failures_per_cycle:
+                cycle_degraded_reason = (
+                    "Snapshot fetch failure threshold reached"
+                    f" ({snapshot_fetch_failures}/{cfg.execution.max_snapshot_fetch_failures_per_cycle})"
+                )
+                runtime.reporter.critical(
+                    f"{cycle_degraded_reason}; ending cycle early to avoid prolonged stall."
+                )
+                break
             continue
 
         opportunity = runtime.detector.detect(snapshot)
@@ -359,15 +383,25 @@ def run_market_scan_cycle(
     runtime.reporter.build_daily_report(performance, runtime.risk_manager.state)
     selector.save_state(cfg.execution.selector_state_file)
 
+    cycle_status = "ok"
+    reason = "Cycle complete"
+    if runtime.risk_manager.state.halted:
+        cycle_status = "halted"
+        reason = runtime.risk_manager.state.halt_reason or "Risk manager halted trading"
+    elif cycle_degraded_reason:
+        cycle_status = "degraded"
+        reason = cycle_degraded_reason
+
     return {
-        "cycle_status": "ok" if not runtime.risk_manager.state.halted else "halted",
-        "reason": runtime.risk_manager.state.halt_reason or "Cycle complete",
+        "cycle_status": cycle_status,
+        "reason": reason,
         "candidate_markets": len(candidates),
         "selected_markets": len(selected),
         "scanned_markets": scanned_markets,
         "executed_trades": executed_trades,
         "skipped_markets": skipped_markets,
         "net_pnl": performance.net_pnl,
+        "snapshot_fetch_failures": snapshot_fetch_failures,
         "paused_for_review": red_day_paused,
         "critical_alerts": runtime.reporter.critical_alerts,
         "top_market_stats": selector.snapshot_stats(),
@@ -377,7 +411,11 @@ def run_market_scan_cycle(
     }
 
 
-def run_continuous(config: AppConfig | None = None, max_cycles: int | None = None) -> None:
+def run_continuous(
+    config: AppConfig | None = None,
+    max_cycles: int | None = None,
+    max_runtime_seconds: int | None = None,
+) -> None:
     cfg = config or load_default_config()
     cfg.validate()
     selector = _build_selector(cfg)
@@ -386,6 +424,17 @@ def run_continuous(config: AppConfig | None = None, max_cycles: int | None = Non
 
     cycle = 0
     current_day = utc_now().date()
+    consecutive_degraded_cycles = 0
+    started_at = time.monotonic()
+    print(
+        "Continuous mode started: "
+        f"cadence={cfg.execution.cadence_seconds}s "
+        f"degraded_sleep={cfg.execution.degraded_cycle_sleep_seconds}s "
+        f"max_consecutive_degraded={cfg.execution.max_consecutive_degraded_cycles} "
+        f"max_cycles={max_cycles if max_cycles is not None else 'none'} "
+        f"max_runtime_seconds={max_runtime_seconds if max_runtime_seconds is not None else 'none'}",
+        flush=True,
+    )
     while True:
         new_day = utc_now().date()
         if new_day != current_day:
@@ -397,26 +446,156 @@ def run_continuous(config: AppConfig | None = None, max_cycles: int | None = Non
             current_day = new_day
 
         cycle += 1
-        result = run_market_scan_cycle(config=cfg, selector=selector, runtime=runtime)
+        try:
+            result = run_market_scan_cycle(config=cfg, selector=selector, runtime=runtime)
+        except Exception as exc:  # pragma: no cover - defensive runtime path
+            consecutive_degraded_cycles += 1
+            print(
+                f"Cycle {cycle}: status=error selected=0 scanned=0 executed=0 "
+                f"net_pnl={runtime.engine.performance().net_pnl:.4f} cached=False reason={exc}",
+                flush=True,
+            )
+            if consecutive_degraded_cycles >= cfg.execution.max_consecutive_degraded_cycles:
+                print(
+                    "Continuous mode stopped: too many consecutive degraded/error cycles "
+                    f"({consecutive_degraded_cycles}).",
+                    flush=True,
+                )
+                break
+            if max_cycles is not None and cycle >= max_cycles:
+                break
+            if max_runtime_seconds is not None and (time.monotonic() - started_at) >= max_runtime_seconds:
+                break
+            time.sleep(cfg.execution.degraded_cycle_sleep_seconds)
+            continue
+
+        cycle_status = str(result["cycle_status"])
+        if cycle_status == "ok":
+            consecutive_degraded_cycles = 0
+        elif cycle_status == "degraded":
+            consecutive_degraded_cycles += 1
+        else:
+            consecutive_degraded_cycles = 0
         print(
-            f"Cycle {cycle}: status={result['cycle_status']} selected={result['selected_markets']} "
+            f"Cycle {cycle}: status={cycle_status} selected={result['selected_markets']} "
             f"scanned={result['scanned_markets']} executed={result['executed_trades']} "
-            f"net_pnl={result['net_pnl']:.4f} cached={result['used_cached_candidates']}"
+            f"net_pnl={result['net_pnl']:.4f} cached={result['used_cached_candidates']} "
+            f"snapshot_failures={result.get('snapshot_fetch_failures', 0)} "
+            f"reason={result['reason']}"
+            f"{f' degraded_count={consecutive_degraded_cycles}' if cycle_status == 'degraded' else ''}",
+            flush=True,
         )
 
-        if result["cycle_status"] == "halted" or result["paused_for_review"]:
+        if cycle_status == "halted" or result["paused_for_review"]:
+            break
+        if cycle_status == "degraded" and consecutive_degraded_cycles >= cfg.execution.max_consecutive_degraded_cycles:
+            print(
+                "Continuous mode stopped: too many consecutive degraded cycles "
+                f"({consecutive_degraded_cycles}).",
+                flush=True,
+            )
             break
         if max_cycles is not None and cycle >= max_cycles:
             break
+        if max_runtime_seconds is not None and (time.monotonic() - started_at) >= max_runtime_seconds:
+            break
 
-        time.sleep(cfg.execution.cadence_seconds)
+        if cycle_status == "degraded":
+            time.sleep(cfg.execution.degraded_cycle_sleep_seconds)
+        else:
+            time.sleep(cfg.execution.cadence_seconds)
+
+
+def run_daily_summary(config: AppConfig | None = None, target_date: str | None = None) -> dict[str, Any]:
+    cfg = config or load_default_config()
+    cfg.validate()
+    return build_daily_summary(cfg.execution.ledger_dir, target_date=target_date)
+
+
+def export_daily_trades_excel(
+    config: AppConfig | None = None,
+    target_date: str | None = None,
+    output_path: str | None = None,
+) -> dict[str, Any]:
+    cfg = config or load_default_config()
+    cfg.validate()
+    return export_trades_to_excel(cfg.execution.ledger_dir, target_date=target_date, output_path=output_path)
 
 
 def main() -> None:
     ticker = os.getenv("KALSHI_MARKET_TICKER")
     continuous = os.getenv("KALSHI_CONTINUOUS", "0") == "1"
+    summary_mode = os.getenv("KALSHI_DAILY_SUMMARY", "0") == "1"
+    export_excel_mode = os.getenv("KALSHI_EXPORT_EXCEL", "0") == "1"
+    summary_date = os.getenv("KALSHI_SUMMARY_DATE") or None
+    excel_output_path = os.getenv("KALSHI_EXCEL_PATH") or None
     max_cycles_raw = os.getenv("KALSHI_MAX_CYCLES", "")
     max_cycles = int(max_cycles_raw) if max_cycles_raw.isdigit() else None
+    max_runtime_seconds_raw = os.getenv("KALSHI_MAX_RUNTIME_SECONDS", "")
+    max_runtime_seconds = int(max_runtime_seconds_raw) if max_runtime_seconds_raw.isdigit() else None
+
+    if export_excel_mode:
+        report = export_daily_trades_excel(target_date=summary_date, output_path=excel_output_path)
+        print(f"Excel export date: {report['date']}")
+        print(f"Trades exported: {report['trades_exported']}")
+        print(f"Grand net total: {report['grand_net_total']:.6f}")
+        print(f"Excel file: {report['output_path']}")
+        print(f"Source trade log: {report['source_trade_log']}")
+        return
+
+    if summary_mode:
+        summary = run_daily_summary(target_date=summary_date)
+        print(f"Daily Summary ({summary['date']})")
+        print(f"Trades executed: {summary['trades_executed']}")
+        print(f"Total paper PnL: {_colorize_pnl(float(summary['total_paper_pnl']), with_sign=False)}")
+        print(f"Total executed notional: {summary['total_executed_notional']:.6f}")
+        print(f"Average PnL per trade: {_colorize_pnl(float(summary['avg_pnl_per_trade']), with_sign=False)}")
+        print(f"Average return per trade: {summary['avg_return_per_trade_pct']:.4f}%")
+        print(
+            "Trade outcomes: "
+            f"wins={summary['profitable_trades']} losses={summary['losing_trades']} breakeven={summary['breakeven_trades']}"
+        )
+        print("Markets traded:")
+        if summary["traded_markets"]:
+            for market in summary["traded_markets"]:
+                print(
+                    f"  - {market['ticker']}: trades={market['trades']} "
+                    f"notional={market['notional']:.2f} "
+                    f"net_pnl={_colorize_pnl(float(market['net_pnl']))} "
+                    f"avg_pnl={_colorize_pnl(float(market['avg_pnl_per_trade']))} "
+                    f"return={market['return_pct']:.4f}%"
+                )
+        else:
+            print("  - none")
+        print("Executed trade details:")
+        if summary["trade_details"]:
+            for trade in summary["trade_details"]:
+                print(
+                    f"  - {trade['timestamp']} | {trade['ticker']} | "
+                    f"notional={float(trade['notional']):.2f} | "
+                    f"net_pnl={_colorize_pnl(float(trade['net_pnl']))} | "
+                    f"return={float(trade['return_pct']):.4f}% | held_s={trade['held_seconds']}"
+                )
+        else:
+            print("  - none")
+        print("Skip reasons:")
+        if summary["skip_reasons"]:
+            for reason, count in summary["skip_reasons"].items():
+                print(f"  - {count}x {reason}")
+        else:
+            print("  - none")
+        print("Top markets by arb hit rate:")
+        if summary["top_markets_by_arb_hit_rate"]:
+            for row in summary["top_markets_by_arb_hit_rate"]:
+                print(
+                    f"  - {row['ticker']}: hit_rate={row['arb_hit_rate']:.2%} "
+                    f"(hits={row['arb_hits']}, obs={row['observations']}, executed={row['executed_trades']})"
+                )
+        else:
+            print("  - none")
+        print(f"Decision log: {summary['decision_log_path']}")
+        print(f"Trade log: {summary['trade_log_path']}")
+        return
 
     if ticker:
         result = run_once(ticker=ticker)
@@ -431,7 +610,7 @@ def main() -> None:
         return
 
     if continuous:
-        run_continuous(max_cycles=max_cycles)
+        run_continuous(max_cycles=max_cycles, max_runtime_seconds=max_runtime_seconds)
         return
 
     cycle = run_market_scan_cycle()
