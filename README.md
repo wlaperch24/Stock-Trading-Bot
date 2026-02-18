@@ -21,6 +21,7 @@ This project is a paper-trading framework that reads real-time Kalshi market dat
 - Candidate market universe cache is used if discovery temporarily fails
 - HTTP retries are enabled for transient API/network errors
 - Continuous mode treats discovery outages as degraded cycles and auto-retries with bounded consecutive-failure protection
+- Continuous mode now performs a strict Kalshi connectivity preflight and exits fast with explicit DNS/network diagnostics when data cannot be reached
 - Risk limits:
   - Starting capital: `$5,000`
   - Fixed trade notional per executed trade: `$100`

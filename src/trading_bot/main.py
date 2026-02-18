@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 import time
 from typing import Any
 
@@ -140,6 +141,34 @@ def _load_market_cache(path: str) -> list[object]:
         category = str(item.get("category", "unknown"))
         candidates.append(MarketDescriptor(ticker=ticker, liquidity_score=liquidity_score, category=category))
     return candidates
+
+
+def _looks_like_dns_resolution_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(
+        token in text
+        for token in (
+            "nodename nor servname provided",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "could not resolve host",
+            "getaddrinfo failed",
+        )
+    )
+
+
+def _preflight_data_connectivity(runtime: RuntimeContext, cfg: AppConfig) -> tuple[bool, str]:
+    host = urlparse(cfg.kalshi_base_url).hostname or cfg.kalshi_base_url
+    try:
+        runtime.data_client.fetch_markets(limit=1, status="open")
+        return True, f"Kalshi connectivity preflight passed for host={host}"
+    except Exception as exc:  # pragma: no cover - network path is environment-dependent
+        if _looks_like_dns_resolution_error(exc):
+            return (
+                False,
+                f"Kalshi connectivity preflight failed: DNS resolution error for host={host} ({exc})",
+            )
+        return False, f"Kalshi connectivity preflight failed for host={host} ({exc})"
 
 
 def run_once(
@@ -421,6 +450,11 @@ def run_continuous(
     selector = _build_selector(cfg)
     selector.load_state(cfg.execution.selector_state_file)
     runtime = _build_runtime(cfg)
+    if cfg.execution.preflight_connectivity_check:
+        ok, message = _preflight_data_connectivity(runtime, cfg)
+        print(message, flush=True)
+        if not ok:
+            return
 
     cycle = 0
     current_day = utc_now().date()

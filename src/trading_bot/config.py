@@ -38,6 +38,7 @@ class ExecutionConfig:
     max_snapshot_fetch_failures_per_cycle: int = 12
     max_consecutive_degraded_cycles: int = 6
     degraded_cycle_sleep_seconds: int = 60
+    preflight_connectivity_check: bool = True
 
 
 @dataclass
